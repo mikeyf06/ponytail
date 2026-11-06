@@ -1,7 +1,7 @@
 // The task board: one self-contained HTML page built from the band's CSV ledgers.
 // No server and no network: inline CSS, inline SVG and a few lines of script.
 
-import { LOGO_PATHS, LOGO_VIEWBOX } from './logo'
+import { LOGO_PATHS, LOGO_VIEWBOX } from './logo.ts'
 
 export const duration = (minutes: number) =>
   minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`
@@ -21,14 +21,18 @@ export type Task = {
   started: string
   project: string
   name: string
-  cost: number
-  turns: number
-  agentMinutes: number
-  tokens: number
+  cost: number | null
+  turns: number | null
+  agentMinutes: number | null
+  tokens: number | null
   reuse: number | null
   tests: string
   level: string
   model: string
+  source?: 'codex'
+  workspace?: string
+  branch?: string
+  timePartial?: boolean
 }
 
 // RFC 4180 rows: quoted fields may hold commas, doubled quotes and line breaks.
@@ -66,7 +70,10 @@ export function tasksFrom(text: string): Task[] {
   const [head, ...rows] = parseCsv(text)
   if (!head?.includes('key')) return []
   const at = (row: string[], col: string) => row[head.indexOf(col)] ?? ''
-  const num = (row: string[], col: string) => Number(at(row, col)) || 0
+  const num = (row: string[], col: string) => {
+    const value = at(row, col)
+    return value.trim() !== '' && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null
+  }
   return rows.map(row => ({
     started: at(row, 'started'),
     project: at(row, 'project'),
@@ -79,6 +86,10 @@ export function tasksFrom(text: string): Task[] {
     tests: at(row, 'tests'),
     level: at(row, 'level'),
     model: at(row, 'model'),
+    ...(at(row, 'key').startsWith('codex:') ? { source: 'codex' as const } : {}),
+    ...(at(row, 'workspace') ? { workspace: at(row, 'workspace') } : {}),
+    ...(at(row, 'branch') ? { branch: at(row, 'branch') } : {}),
+    ...(num(row, 'timed_turns') !== null && num(row, 'turns') !== null && num(row, 'timed_turns')! < num(row, 'turns')! ? { timePartial: true } : {}),
   }))
 }
 
@@ -107,7 +118,7 @@ const CSS = `:root{color-scheme:dark;--bg:#060606;--panel:#0c0c0c;--card:linear-
 .logo{width:28px;height:32px;flex:none}.logo svg{width:100%;height:100%;display:block}
 .side-label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);padding:6px 10px}
 .nav-item{display:flex;align-items:center;gap:10px;width:100%;border:0;background:transparent;color:var(--muted);font:inherit;padding:8px 10px;border-radius:10px;cursor:pointer;text-align:left}
-.nav-item .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nav-item .name{flex:1;min-width:0;overflow-wrap:anywhere}
 .nav-item:hover,.nav-item.on{background:var(--track);color:var(--text)}
 .nav-item .n{font:12px ${MONO_CSS};color:var(--faint)}
 .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--c);box-shadow:0 0 10px var(--c)}
@@ -123,7 +134,8 @@ h1{margin:2px 0 0;font-size:26px;font-weight:650;letter-spacing:-.02em}.top p{ma
 .seg button.on{background:var(--segOn);color:var(--text);box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 0 0 1px var(--line2)}
 .btn{border:1px solid var(--line2);background:var(--track);color:var(--text);font:inherit;font-size:13px;padding:8px 14px;border-radius:11px;cursor:pointer}.btn:hover{border-color:var(--faint)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow)}
-.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:14px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:14px}
+.data-note{color:var(--faint);font-size:12px;margin:0 0 14px}.data-note:empty{display:none}
 .kpi{padding:18px 20px 0;position:relative;overflow:hidden}
 .kpi::after{content:"";position:absolute;left:0;right:0;bottom:0;height:75%;background:radial-gradient(120% 100% at 50% 135%,var(--k),transparent 70%);opacity:var(--tint);pointer-events:none}
 .kpi-label{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px}
@@ -173,7 +185,6 @@ dialog{border:1px solid var(--line);border-radius:18px;padding:0;background:var(
 dialog::backdrop{background:rgba(0,0,0,.55)}
 .dlg-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line)}
 .dlg-actions{display:flex;gap:8px}.dlg-body{padding:18px}.dlg-body svg{width:100%;height:auto;display:block;border-radius:12px}
-@media (max-width:1360px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:1100px){.grid2{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:860px){.app{grid-template-columns:minmax(0,1fr)}.side{position:static;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;border-right:0;border-bottom:1px solid var(--line)}
 .side-label,.foot-text,.foot-sep{display:none}.side-foot{margin:0 0 0 auto;padding:0;border:0}.brand{padding:2px 10px}#projects{display:flex;gap:4px;flex-wrap:wrap}.nav-item{width:auto}
@@ -196,23 +207,27 @@ const APP = `(function () {
   function two(n) { return (n < 10 ? '0' : '') + n }
   function dayKey(ms) { var d = new Date(ms); return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) }
   // claude-opus-5-5 reads as Opus 5.5; a trailing date in the id is dropped.
-  function modelName(m) { var p = m.replace(/^claude-/, '').split('-'); return p[0] ? p[0][0].toUpperCase() + p[0].slice(1) + (p.length > 1 ? '\\u00a0' + p.slice(1).filter(function (x) { return x.length < 3 }).join('.') : '') : '' }
+  function modelName(m) { if (!m.startsWith('claude-')) return m; var p = m.replace(/^claude-/, '').split('-'); return p[0] ? p[0][0].toUpperCase() + p[0].slice(1) + (p.length > 1 ? '\\u00a0' + p.slice(1).filter(function (x) { return x.length < 3 }).join('.') : '') : '' }
   function shortDate(key) { return MONTHS[+key.slice(5, 7) - 1] + ' ' + +key.slice(8, 10) }
   function dur(min) { return min < 60 ? min + 'm' : Math.floor(min / 60) + 'h ' + (min % 60) + 'm' }
-  function time(ms) { var s = Math.round(ms / 1000); return s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : dur(Math.round(s / 60)) }
-  function tok(n) { return n < 1000 ? String(Math.round(n)) : n < 1e6 ? +(n / 1e3).toFixed(1) + 'k' : +(n / 1e6).toFixed(1) + 'M' }
-  function money(n) { return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
+  function time(ms) { if (ms === null) return '–'; var s = Math.round(ms / 1000); return s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : dur(Math.round(s / 60)) }
+  function tok(n) { return n === null ? '–' : n < 1000 ? String(Math.round(n)) : n < 1e6 ? +(n / 1e3).toFixed(1) + 'k' : +(n / 1e6).toFixed(1) + 'M' }
+  function money(n) { return n === null ? '–' : '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }
   function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's') }
   function add(a, b) { return a + b }
   var METRICS = {
     sessions: { label: 'Sessions', pick: function () { return 1 }, fmt: String },
-    time: { label: 'Agent time', pick: function (t) { return t.agentMinutes * 60000 }, fmt: time },
+    time: { label: 'Agent time', pick: function (t) { return t.agentMinutes === null ? null : t.agentMinutes * 60000 }, fmt: time },
     cost: { label: 'Cost', pick: function (t) { return t.cost }, fmt: money },
-    tokens: { label: 'Tokens', pick: function (t) { return t.tokens }, fmt: tok }
+    tokens: { label: 'Tokens', pick: function (t) { return t.tokens }, fmt: tok },
+    turns: { label: 'Turns', pick: function (t) { return t.turns }, fmt: String }
   }
-  function total(list, pick) { return list.map(pick).reduce(add, 0) }
-  function latest(name) { return tasks.filter(function (t) { return t.project === name }).reduce(function (m, t) { return t.started > m ? t.started : m }, '') }
-  var names = Array.from(new Set(tasks.map(function (t) { return t.project }))).sort(function (a, b) { return latest(b).localeCompare(latest(a)) })
+  function known(list, pick) { return list.filter(function (t) { return pick(t) !== null }) }
+  function total(list, pick) { var rows = known(list, pick); return rows.length ? rows.map(pick).reduce(add, 0) : list.length ? null : 0 }
+  function complete(list, pick) { return list.every(function (t) { return pick(t) !== null && (pick !== METRICS.time.pick || !t.timePartial) }) }
+  function coverage(list, pick) { return complete(list, pick) ? '' : 'recorded for ' + known(list, pick).length + ' of ' + list.length + ' sessions' + (pick === METRICS.time.pick && list.some(function (t) { return t.timePartial }) ? '; completed turns only' : '') }
+  function average(list, pick) { var rows = known(list, pick); return rows.length ? total(rows, pick) / rows.length : null }
+  var names = Array.from(new Set(tasks.map(function (t) { return t.project }))).sort(function (a, b) { return (a === 'Other chats') - (b === 'Other chats') || a.localeCompare(b) })
   function colorOf(name) { return PALETTE[names.indexOf(name) % PALETTE.length] }
   function scope() { return state.project ? tasks.filter(function (t) { return t.project === state.project }) : tasks }
   function first(list) { return list.reduce(function (m, t) { return !m || t.started < m ? t.started : m }, '') }
@@ -224,7 +239,7 @@ const APP = `(function () {
   }
   function days(n) { var out = []; for (var i = n - 1; i >= 0; i--) out.push(dayKey(now - i * DAY)); return out }
   function inDays(list, keys) { return list.filter(function (t) { return keys.indexOf(t.started.slice(0, 10)) >= 0 }) }
-  function perDay(list, keys, pick) { return keys.map(function (k) { return total(list.filter(function (t) { return t.started.slice(0, 10) === k }), pick) }) }
+  function perDay(list, keys, pick) { return keys.map(function (k) { return total(list.filter(function (t) { return t.started.slice(0, 10) === k }), pick) || 0 }) }
   function avg(values, r) { return values.map(function (_, i) { var a = values.slice(Math.max(0, i - r), i + r + 1); return a.reduce(add, 0) / a.length }) }
   // Monotone cubic through the points (as d3's curveMonotoneX): flat at peaks and valleys, never past a point.
   function smooth(p) {
@@ -250,7 +265,7 @@ const APP = `(function () {
 
   function sidebar() {
     var nav = byId('projects'); nav.textContent = ''
-    ;[['', 'All projects', tasks.length]].concat(names.map(function (n) { return [n, n, tasks.filter(function (t) { return t.project === n }).length] })).forEach(function (p) {
+    ;[['', 'All sessions', tasks.length]].concat(names.map(function (n) { return [n, n, tasks.filter(function (t) { return t.project === n }).length] })).forEach(function (p) {
       var b = h('button', 'nav-item' + (state.project === p[0] ? ' on' : '')); b.type = 'button'; b.title = p[1]
       if (p[0]) { var d = h('span', 'dot'); d.style.setProperty('--c', colorOf(p[0])); b.append(d) }
       b.append(h('span', 'name', p[1]), h('span', 'n', String(p[2])))
@@ -260,10 +275,14 @@ const APP = `(function () {
   }
 
   function header() {
-    var list = scope(), name = state.project || 'All projects', f = first(list)
+    var list = scope(), name = state.project || 'All sessions', cur = inDays(list, days(span()))
     byId('crumb').textContent = name
     byId('title').textContent = name
-    byId('subtitle').textContent = plural(list.length, 'session') + (f ? ' since ' + shortDate(f.slice(0, 10)) + ', ' + f.slice(0, 4) : '')
+    byId('subtitle').textContent = plural(cur.length, 'session') + (state.period ? ' in the last ' + span() + ' days · ' + list.length + ' all time' : ', all time')
+    byId('data-note').textContent = list.some(function (t) { return t.source === 'codex' }) ? 'Codex history does not record billing cost or test results. Only supported metrics are shown; a dash means not recorded.' : ''
+    document.querySelectorAll('[data-metric]').forEach(function (b) { b.hidden = !known(list, METRICS[b.getAttribute('data-metric')].pick).length })
+    if (!known(list, METRICS[state.metric].pick).length) state.metric = known(list, METRICS.tokens.pick).length ? 'tokens' : 'time'
+    document.querySelectorAll('[data-metric]').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-metric') === state.metric) })
   }
 
   function sparkline(values, i, k) {
@@ -286,25 +305,28 @@ const APP = `(function () {
     var cur = inDays(list, keys), prev = state.period ? inDays(list, days(2 * n).slice(0, n)) : []
     KPI.forEach(function (k, i) {
       var M = METRICS[k[0]], v = total(cur, M.pick), p = total(prev, M.pick)
+      if (k[0] !== 'sessions' && !known(list, M.pick).length) return
       var card = h('div', 'card kpi'), value = h('div', 'kpi-value num', M.fmt(v)); card.style.setProperty('--k', k[2])
-      if (p > 0) { var pct = Math.round((v - p) / p * 100); value.append(h('span', 'delta ' + (pct >= 0 ? 'up' : 'down'), (pct >= 0 ? '↑' : '↓') + Math.abs(pct) + '%')) }
+      if (v !== null && p > 0 && complete(cur, M.pick) && complete(prev, M.pick)) { var pct = Math.round((v - p) / p * 100); value.append(h('span', 'delta ' + (pct >= 0 ? 'up' : 'down'), (pct >= 0 ? '↑' : '↓') + Math.abs(pct) + '%')) }
       var note = !state.period ? 'all time' : p > 0 ? 'vs previous ' + n + ' days' : 'last ' + n + ' days'
-      card.append(h('div', 'kpi-label', M.label), value, h('div', 'kpi-note', note), sparkline(perDay(list, keys, M.pick), i, k))
+      card.append(h('div', 'kpi-label', M.label), value, h('div', 'kpi-note', coverage(cur, M.pick) || note), sparkline(perDay(list, keys, M.pick), i, k))
       wrap.append(card)
     })
   }
 
   function chart() {
     var list = scope(), n = span(), keys = days(n), M = METRICS[state.metric], box = byId('stream'), tip = byId('tip'); tip.hidden = true
+    box.onmousemove = box.onmouseleave = null
     var W = Math.max(320, Math.round(box.getBoundingClientRect().width) || 900), H = 340, top = 66, base = 282
     box.setAttribute('viewBox', '0 0 ' + W + ' ' + H); box.textContent = ''
     var defs = svg('defs', {}, box); blur(defs, 'sglow', 10)
     var shown = names.filter(function (p) { return (!state.project || p === state.project) && list.some(function (t) { return t.project === p }) })
     var projects = shown.filter(function (p) { return !state.hidden[p] })
     var cur = inDays(list, keys).filter(function (t) { return !state.hidden[t.project] })
-    byId('chart-sub').textContent = M.label + (state.period ? ', last ' + n + ' days' : ', all time')
+    byId('chart-sub').textContent = M.label + (state.period ? ', last ' + n + ' days' : ', all time') + (coverage(cur, M.pick) ? ' · ' + coverage(cur, M.pick) : '')
     byId('chart-total').textContent = M.fmt(total(cur, M.pick))
     legend(shown)
+    if (total(cur, M.pick) === null) { svg('text', { x: W / 2, y: (top + base) / 2, 'text-anchor': 'middle', 'class': 'empty-chart' }, box).textContent = 'No recorded ' + M.label.toLowerCase() + ' in this period'; return }
     var x = function (i) { return n > 1 ? i * W / (n - 1) : W / 2 }
     svg('line', { x1: 0, x2: W, y1: base + 22, y2: base + 22, 'class': 'base' }, box)
     for (var w = 0, step = Math.max(1, Math.ceil(n / 6)); w < n; w += step) svg('text', { x: x(w), y: H - 6, 'class': 'axis', 'text-anchor': w ? 'middle' : 'start' }, box).textContent = shortDate(keys[w])
@@ -313,7 +335,7 @@ const APP = `(function () {
     var layers = raw
     var totals = keys.map(function (_, i) { return layers.reduce(function (a, r) { return a + r[i] }, 0) })
     var max = Math.max.apply(null, totals.concat([0]))
-    if (max <= 0) { svg('text', { x: W / 2, y: (top + base) / 2, 'text-anchor': 'middle', 'class': 'empty-chart' }, box).textContent = 'No sessions in this period'; return }
+    if (max <= 0) { svg('text', { x: W / 2, y: (top + base) / 2, 'text-anchor': 'middle', 'class': 'empty-chart' }, box).textContent = cur.length ? 'Recorded ' + M.label.toLowerCase() + ' is zero in this period' : 'No sessions in this period'; return }
     var y = function (v) { return base - v / max * (base - top) }, acc = keys.map(function () { return 0 }), shapes = []
     layers.forEach(function (r, li) {
       var lower = acc, upper = acc.map(function (a, i) { return a + r[i] }), c = colorOf(projects[li]); acc = upper
@@ -334,7 +356,8 @@ const APP = `(function () {
     box.onmousemove = function (e) {
       var r = box.getBoundingClientRect(), i = Math.max(0, Math.min(n - 1, Math.round((e.clientX - r.left) / r.width * (n - 1))))
       hover.setAttribute('x1', x(i)); hover.setAttribute('x2', x(i)); hover.setAttribute('visibility', 'visible')
-      tip.textContent = ''; tip.append(h('div', 'tip-date', shortDate(keys[i])), h('div', 'tip-value', M.fmt(raw.reduce(function (a, rr) { return a + rr[i] }, 0))))
+      var daily = cur.filter(function (t) { return t.started.slice(0, 10) === keys[i] })
+      tip.textContent = ''; tip.append(h('div', 'tip-date', shortDate(keys[i])), h('div', 'tip-value', M.fmt(total(daily, M.pick))), h('div', '', coverage(daily, M.pick)))
       tip.style.left = x(i) / W * r.width + 'px'; tip.style.top = y(totals[i]) / H * r.height + 'px'; tip.hidden = false
     }
     box.onmouseleave = function () { hover.setAttribute('visibility', 'hidden'); tip.hidden = true }
@@ -358,26 +381,37 @@ const APP = `(function () {
 
   function table() {
     var body = byId('rows'), q = state.q.trim().toLowerCase(); body.textContent = ''
-    var list = inDays(scope(), days(span())).filter(function (t) { return !q || (t.name + ' ' + t.project + ' ' + modelName(t.model)).toLowerCase().indexOf(q) >= 0 })
+    var period = inDays(scope(), days(span())), showCost = known(period, METRICS.cost.pick).length > 0, showTests = period.some(function (t) { return !!t.tests })
+    byId('cost-col').hidden = !showCost; byId('tests-col').hidden = !showTests
+    var list = period.filter(function (t) { return !q || (t.name + ' ' + t.project + ' ' + (t.workspace || '') + ' ' + (t.branch || '') + ' ' + modelName(t.model)).toLowerCase().indexOf(q) >= 0 })
       .sort(function (a, b) { return b.started.localeCompare(a.started) })
     byId('count').textContent = String(list.length)
     if (!list.length) {
       var tr = h('tr'), td = h('td', 'empty', q ? 'No session matches.' : tasks.length ? 'No sessions in this period.' : 'No sessions yet. The band records a session after its first turn.')
-      td.colSpan = 6; tr.append(td); body.append(tr); return
+      td.colSpan = 4 + Number(showCost) + Number(showTests); tr.append(td); body.append(tr); return
     }
     var max = Math.max.apply(null, list.map(function (t) { return t.agentMinutes })) || 1
     list.forEach(function (t) {
       var tr = h('tr'), name = h('td', 'name'), task = h('div', 'task', t.name || 'Untitled session'), bar = h('div', 'bar'), tests = h('td')
       task.title = t.name; bar.style.setProperty('--c', colorOf(t.project)); bar.style.width = Math.max(4, t.agentMinutes / max * 100) + '%'
-      name.append(task, h('div', 'sub', (state.project ? '' : t.project + ' · ') + shortDate(t.started.slice(0, 10)) + ', ' + t.started.slice(11) + (t.model ? ' · ' + modelName(t.model) : '')), bar)
+      bar.hidden = t.agentMinutes === null
+      var detail = (t.branch ? 'Branch: ' + t.branch : '') + (t.workspace && t.workspace.toLowerCase() !== t.project.toLowerCase() ? (t.branch ? ' · ' : '') + 'Folder: ' + t.workspace : '')
+      name.append(task, h('div', 'sub', (state.project ? '' : t.project + ' · ') + shortDate(t.started.slice(0, 10)) + ', ' + t.started.slice(11) + (t.model ? ' · ' + modelName(t.model) : '')))
+      if (detail) name.append(h('div', 'sub', detail))
+      name.append(bar)
       // An imported session has no test record: a dash, not "not run".
       tests.append(t.tests || t.level !== 'import' ? pill(t.tests) : h('span', 'sub', '–'))
-      tr.append(name, h('td', 'r num', time(t.agentMinutes * 60000)), h('td', 'r num', money(t.cost)), h('td', 'r num', tok(t.tokens)), h('td', 'r num', String(t.turns)), tests)
+      var agent = h('td', 'r num', time(METRICS.time.pick(t)) + (t.timePartial && t.agentMinutes !== null ? '+' : ''))
+      agent.title = t.timePartial ? 'Recorded time for completed turns only; unfinished or untimed turns are excluded.' : t.agentMinutes === null ? 'No complete turn timing recorded.' : 'Recorded agent time'
+      tr.append(name, agent)
+      if (showCost) { var cost = h('td', 'r num', money(t.cost)); cost.title = t.cost === null ? 'Cost is not recorded for this session.' : 'Recorded API-priced cost'; tr.append(cost) }
+      tr.append(h('td', 'r num', tok(t.tokens)), h('td', 'r num', t.turns === null ? '–' : String(t.turns)))
+      if (showTests) tr.append(tests)
       body.append(tr)
     })
   }
 
-  // Thermal ramp: a quiet indigo for a little agent time, through red to yellow for the most.
+  // Thermal ramp: quiet indigo for a few session starts, through red to yellow for the most.
   var HEAT = [[0, [58, 48, 120]], [.4, [150, 45, 112]], [.65, [235, 72, 58]], [.85, [255, 140, 60]], [1, [255, 214, 102]]]
   function heatColor(a) {
     for (var i = 1; i < HEAT.length; i++) if (a <= HEAT[i][0]) {
@@ -392,9 +426,9 @@ const APP = `(function () {
     return d + 'Z'
   }
 
-  // The last 12 weeks as a honeycomb: a column per week, a row per weekday, the colour is the day's agent time.
+  // Activity is session presence, independent of missing timing records.
   function heat() {
-    var s = byId('heat'), list = scope(), keys = days(84), vals = perDay(list, keys, METRICS.time.pick), max = Math.max.apply(null, vals.concat([0]))
+    var s = byId('heat'), list = scope(), keys = days(84), vals = perDay(list, keys, METRICS.sessions.pick), max = Math.max.apply(null, vals.concat([0]))
     var r = 17, w = Math.sqrt(3) * r, left = 44, top = r + 2, firstDow = new Date(now - 83 * DAY).getDay(), cols = Math.ceil((84 + firstDow) / 7); s.textContent = ''
     blur(svg('defs', {}, s), 'hglow', 6)
     var cells = keys.map(function (k, i) {
@@ -404,7 +438,20 @@ const APP = `(function () {
     cells.forEach(function (c) { if (c.a > .6) svg('path', { d: hex(c.cx, c.cy, r), fill: heatColor(c.a), filter: 'url(#hglow)', 'class': 'glow-cell' }, s) })
     cells.forEach(function (c) {
       var p = svg('path', c.v ? { d: hex(c.cx, c.cy, r - 2), fill: heatColor(c.a) } : { d: hex(c.cx, c.cy, r - 2), 'class': 'cell-empty' }, s)
-      svg('title', {}, p).textContent = shortDate(c.k) + ': ' + (c.v ? time(c.v) : 'no session')
+      var daily = list.filter(function (t) { return t.started.slice(0, 10) === c.k })
+      var lines = [shortDate(c.k) + ', ' + c.k.slice(0, 4) + ': ' + plural(c.v, 'session') + ' started']
+      if (daily.length) {
+        if (!state.project) lines.push('Projects: ' + Array.from(new Set(daily.map(function (t) { return t.project }))).join(', '))
+        ;['time', 'tokens', 'turns'].forEach(function (key) {
+          var M = METRICS[key], note = coverage(daily, M.pick)
+          if (known(daily, M.pick).length) lines.push((key === 'time' ? 'Recorded agent time' : M.label) + ': ' + M.fmt(total(daily, M.pick)) + (note ? ' (' + note + ')' : ''))
+        })
+        lines.push('', 'Sessions:')
+        daily.sort(function (a, b) { return b.started.localeCompare(a.started) }).slice(0, 3).forEach(function (t) { lines.push('• ' + (t.name || 'Untitled session')) })
+        if (daily.length > 3) lines.push('… and ' + (daily.length - 3) + ' more')
+        lines.push('', 'Metrics are lifetime totals for sessions started on this date.')
+      }
+      svg('title', {}, p).textContent = lines.join('\\n')
     })
     ;['Mon', 'Wed', 'Fri'].forEach(function (d, i) { svg('text', { x: 0, y: top + (1 + 2 * i) * r * 1.5 + 4, 'class': 'day' }, s).textContent = d })
     // Legend: the ramp from less to more, under the right edge.
@@ -414,7 +461,7 @@ const APP = `(function () {
     ;[.1, .3, .55, .8, 1].forEach(function (a, i) { svg('path', { d: hex(end - (4 - i) * 15, ly, 6.5), fill: heatColor(a) }, s) })
     svg('text', { x: right, y: ly + 4, 'text-anchor': 'end', 'class': 'day' }, s).textContent = 'More'
     s.setAttribute('viewBox', '0 0 ' + Math.ceil(right + 2) + ' ' + Math.ceil(ly + 10))
-    // Two heroes from the same twelve weeks: on how many days agents worked, and the run of days up to today.
+    // Days with sessions and the run of days up to today.
     var active = vals.filter(function (v) { return v > 0 }).length, run = 0, longest = 0, streak = 0
     vals.forEach(function (v) { run = v > 0 ? run + 1 : 0; longest = Math.max(longest, run) })
     for (var j = vals[83] > 0 ? 83 : 82; j >= 0 && vals[j] > 0; j--) streak++
@@ -423,12 +470,15 @@ const APP = `(function () {
     byId('h-streak').textContent = plural(streak, 'day')
     byId('h-streak-sub').textContent = 'longest ' + plural(longest, 'day')
     var cur = inDays(list, days(span())), byDay = {}, best = null
-    cur.forEach(function (t) { var k = t.started.slice(0, 10); byDay[k] = (byDay[k] || 0) + t.agentMinutes; if (!best || t.agentMinutes > best.agentMinutes) best = t })
+    var timed = known(cur, METRICS.time.pick), partial = !complete(cur, METRICS.time.pick)
+    timed.forEach(function (t) { var k = t.started.slice(0, 10); byDay[k] = (byDay[k] || 0) + t.agentMinutes; if (!best || t.agentMinutes > best.agentMinutes) best = t })
     var busiest = Object.keys(byDay).sort(function (a, b) { return byDay[b] - byDay[a] })[0], facts = byId('facts'); facts.textContent = ''
-    ;[['Busiest day', busiest ? shortDate(busiest) + ' · ' + time(byDay[busiest] * 60000) : '–'],
-      ['Longest session', best ? time(best.agentMinutes * 60000) : '–'],
-      ['Average per session', cur.length ? time(total(cur, METRICS.time.pick) / cur.length) : '–'],
-      ['Average cost per session', cur.length ? money(total(cur, METRICS.cost.pick) / cur.length) : '–']].forEach(function (f) {
+    var rows = []
+    if (timed.length) rows.push([partial ? 'Busiest recorded day' : 'Busiest day', shortDate(busiest) + ' · ' + time(byDay[busiest] * 60000)],
+      [partial ? 'Longest recorded session' : 'Longest session', time(METRICS.time.pick(best))],
+      [partial ? 'Average recorded time' : 'Average per session', time(average(cur, METRICS.time.pick))])
+    if (known(cur, METRICS.cost.pick).length) rows.push([complete(cur, METRICS.cost.pick) ? 'Average cost per session' : 'Average recorded cost', money(average(cur, METRICS.cost.pick))])
+    rows.forEach(function (f) {
       var r = h('div', 'fact'); r.append(h('span', '', f[0]), h('span', 'num', f[1])); facts.append(r)
     })
   }
@@ -440,9 +490,14 @@ const APP = `(function () {
     byId('c-scope').textContent = (state.project || plural(projects.length, 'project')) + ' · ' + (state.period ? 'last ' + n + ' days' : 'all time')
     byId('c-time').textContent = time(total(cur, METRICS.time.pick))
     byId('c-cost').textContent = money(total(cur, METRICS.cost.pick))
+    byId('c-cost').style.display = byId('c-cost-label').style.display = known(cur, METRICS.cost.pick).length ? '' : 'none'
+    byId('c-time-label').textContent = complete(cur, METRICS.time.pick) ? 'Agent time' : 'Recorded agent time'
+    byId('c-cost-label').textContent = complete(cur, METRICS.cost.pick) ? 'Cost' : 'Recorded cost'
     byId('c-tokens').textContent = tok(total(cur, METRICS.tokens.pick))
     byId('c-sessions').textContent = String(cur.length)
+    byId('c-coverage').textContent = ['time', 'cost', 'tokens'].filter(function (key) { return known(cur, METRICS[key].pick).length && coverage(cur, METRICS[key].pick) }).map(function (key) { return METRICS[key].label + ': ' + known(cur, METRICS[key].pick).length + '/' + cur.length + ' sessions' + (key === 'time' && cur.some(function (t) { return t.timePartial }) ? ' (partial turns)' : '') }).join(' · ')
     var g = byId('c-stream'), W = 1200, base = 600, topY = 380; g.textContent = ''
+    if (total(cur, METRICS.time.pick) === null) return
     var layers = projects.map(function (p) { return perDay(cur.filter(function (t) { return t.project === p }), keys, METRICS.time.pick) })
     var totals = keys.map(function (_, i) { return layers.reduce(function (a, r) { return a + r[i] }, 0) }), max = Math.max.apply(null, totals.concat([0]))
     if (max <= 0) return
@@ -508,7 +563,7 @@ const APP = `(function () {
 const SANS = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
 const MONO = "'JetBrains Mono', ui-monospace, Menlo, monospace"
 const cardStat = (y: number, label: string, id: string) =>
-  `<text x="760" y="${y}" font-size="20" fill="#8d8b84">${label}</text><text id="${id}" x="1128" y="${y}" text-anchor="end" font-family="${MONO}" font-size="30" fill="#f3f2ee"></text>`
+  `<text id="${id}-label" x="760" y="${y}" font-size="20" fill="#8d8b84">${label}</text><text id="${id}" x="1128" y="${y}" text-anchor="end" font-family="${MONO}" font-size="30" fill="#f3f2ee"></text>`
 const CARD = `<svg id="card" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" font-family="${SANS}">
 <defs>${PALETTE.map((c, i) => `<linearGradient id="cf${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity=".95"/><stop offset="1" stop-color="${c}" stop-opacity=".55"/></linearGradient>`).join('')}<filter id="cglow" x="-20%" y="-50%" width="140%" height="200%"><feGaussianBlur stdDeviation="12"/></filter><radialGradient id="chalo" cx=".62" cy=".8" r=".6"><stop offset="0" stop-color="#5fe08a" stop-opacity=".16"/><stop offset="1" stop-color="#5fe08a" stop-opacity="0"/></radialGradient></defs>
 <rect width="1200" height="630" fill="#070707"/><rect width="1200" height="630" fill="url(#chalo)"/>
@@ -516,9 +571,10 @@ const CARD = `<svg id="card" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120
 <use href="#pt-logo" x="72" y="62" width="48" height="55"/>
 <text x="134" y="98" font-family="${MONO}" font-size="28" font-weight="600" fill="#f3f2ee">ponytail</text>
 <text id="c-scope" x="1128" y="98" text-anchor="end" font-size="20" fill="#8d8b84"></text>
-<text x="72" y="196" font-size="22" fill="#8d8b84">Agent time</text><text id="c-time" x="66" y="292" font-family="${MONO}" font-size="104" font-weight="600" letter-spacing="-5" fill="#f3f2ee"></text>
+<text id="c-time-label" x="72" y="196" font-size="22" fill="#8d8b84">Agent time</text><text id="c-time" x="66" y="292" font-family="${MONO}" font-size="104" font-weight="600" letter-spacing="-5" fill="#f3f2ee"></text>
 ${cardStat(172, 'Cost', 'c-cost')}${cardStat(228, 'Tokens', 'c-tokens')}${cardStat(284, 'Sessions', 'c-sessions')}
-<text x="72" y="621" font-family="${MONO}" font-size="15" fill="#5e5c55">measured in Claude Code</text><text x="1128" y="621" text-anchor="end" font-family="${MONO}" font-size="15" fill="#5fe08a">ponytail.dev</text></svg>`
+<text id="c-coverage" x="72" y="340" font-size="16" fill="#8d8b84"></text>
+<text x="72" y="621" font-family="${MONO}" font-size="15" fill="#5e5c55">recorded session metrics</text><text x="1128" y="621" text-anchor="end" font-family="${MONO}" font-size="15" fill="#5fe08a">ponytail.dev</text></svg>`
 
 // JSON inside a script block: "<" is escaped so no name can close the block.
 const json = (value: unknown) => JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')
@@ -537,22 +593,23 @@ export function boardHtml(tasks: Task[], now: number): string {
   return `<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ponytail board</title><link rel="icon" href="${FAVICON}"><style>${CSS}</style></head>
 <body><svg class="sprite" aria-hidden="true" focusable="false"><symbol id="pt-logo" viewBox="${LOGO_VIEWBOX}"><g fill="#1d1c1a">${LOGO_PATHS}</g></symbol></svg>
 <div class="app">
-<aside class="side"><div class="brand"><span class="logo"><svg viewBox="${LOGO_VIEWBOX}" aria-hidden="true"><use href="#pt-logo"/></svg></span>ponytail</div><div class="side-label">Projects</div><nav id="projects"></nav><div class="side-foot"><div class="foot-text">Local board<br>${esc(day(now))}</div><span class="foot-sep"></span>${THEME_BUTTON}</div></aside>
+<aside class="side"><div class="brand"><span class="logo"><svg viewBox="${LOGO_VIEWBOX}" aria-hidden="true"><use href="#pt-logo"/></svg></span>ponytail</div><div class="side-label">Projects &amp; chats · all time</div><nav id="projects"></nav><div class="side-foot"><div class="foot-text">Local board<br>${esc(day(now))}</div><span class="foot-sep"></span>${THEME_BUTTON}</div></aside>
 <main>
 <div class="top"><div><div class="crumb">Board / <b id="crumb"></b></div><h1 id="title"></h1><p id="subtitle"></p></div>
 <div class="actions"><div class="seg" role="group" aria-label="Period">${seg('period', [['7', '7d'], ['30', '30d'], ['90', '90d'], ['0', 'All']], '30')}</div><button type="button" class="btn" id="share">Share card</button></div></div>
 <section class="kpis" id="kpis"></section>
+<p class="data-note" id="data-note"></p>
 <section class="card chart-card"><div class="chart-head"><div><div class="label" id="chart-sub"></div><div class="big num" id="chart-total"></div></div>
 <div class="seg" role="group" aria-label="Metric">${seg('metric', [['time', 'Agent time'], ['cost', 'Cost'], ['tokens', 'Tokens']], 'time')}</div></div>
 <div class="chart-wrap"><svg id="stream" role="img" aria-label="Per project and day"></svg><div class="tip" id="tip" hidden></div></div><div class="legend" id="legend"></div></section>
 <div class="grid2">
 <section class="card list"><div class="list-head"><h3>Sessions<span class="n" id="count"></span></h3><label class="search">${SEARCH_ICON}<input id="q" type="search" placeholder="Search sessions" aria-label="Search sessions"></label></div>
-<div class="table-wrap"><table><thead><tr><th>Session</th><th class="r">Agent time</th><th class="r">Cost</th><th class="r">Tokens</th><th class="r">Turns</th><th>Tests</th></tr></thead><tbody id="rows"></tbody></table></div></section>
-<section class="card heat"><h3>Activity</h3><div class="sub">Agent time per day, last 12 weeks</div><svg id="heat" role="img" aria-label="Agent time per day, last 12 weeks"></svg>
-<div class="heroes"><div><div class="hero-label"><i style="color:#5fe08a">✦</i>Active days</div><div class="hero-value num" id="h-active"></div><div class="hero-sub" id="h-active-sub"></div></div>
+<div class="table-wrap"><table><thead><tr><th>Session</th><th class="r">Agent time</th><th class="r" id="cost-col">Cost</th><th class="r">Tokens</th><th class="r">Turns</th><th id="tests-col">Tests</th></tr></thead><tbody id="rows"></tbody></table></div></section>
+<section class="card heat"><h3>Activity</h3><div class="sub">Sessions started per day, last 12 weeks</div><svg id="heat" role="img" aria-label="Sessions started per day, last 12 weeks"></svg>
+<div class="heroes"><div><div class="hero-label"><i style="color:#5fe08a">✦</i>Days with sessions</div><div class="hero-value num" id="h-active"></div><div class="hero-sub" id="h-active-sub"></div></div>
 <div><div class="hero-label"><i style="color:#ffd166">◆</i>Streak</div><div class="hero-value num" id="h-streak"></div><div class="hero-sub" id="h-streak-sub"></div></div></div><div id="facts"></div></section>
 </div>
-<footer>Measured by ponytail's band in Claude Code. Cost is the API-priced cost Claude Code reports (/cost), not a bill. Nothing here is estimated.</footer>
+<footer>Recorded by ponytail's band or imported from local session history. Claude Code cost is API-priced, not a bill; imported costs may be estimated. Totals include recorded values only; coverage notes identify partial data. Averages use sessions with recorded values.${tasks.some(t => t.source === 'codex') ? ' Codex: root sessions only, excluding subagents and forks. Agent time covers completed turn intervals and may include approval or tool waits. A plus marks sessions with incomplete timing. Chat titles come from the local session index.' : ''}</footer>
 </main></div>
 <dialog id="share-dialog"><div class="dlg-head"><b>Share card</b><div class="dlg-actions"><button type="button" class="btn" id="save-png">Save PNG</button><button type="button" class="btn" id="save-svg">Save SVG</button><button type="button" class="btn" id="share-close">Close</button></div></div><div class="dlg-body">${CARD}</div></dialog>
 <script type="application/json" id="board-data">${json({ now, tasks })}</script>

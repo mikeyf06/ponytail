@@ -129,6 +129,31 @@ In Claude Code, ponytail now shows a band above the prompt: what the current tas
 
 **Board** opens a local page with every task across your projects: cost, agent time and tokens over time, every session with its tests, and the days you worked. By default, everything stays on your machine, in `~/.config/ponytail/band/`. `/ponytail band import` adds your past Claude Code sessions to it, with their cost, agent time and tokens.
 
+### Codex Board: manual refresh
+
+From a source checkout of this repository, use Node **22.18+ (22.x) or 24+** to import local Codex history into the same offline Board. No dependencies, API keys or server are needed. In PowerShell:
+
+```powershell
+Set-Location C:\path\to\ponytail
+node .\hooks\ponytail-codex-import.js
+$configRoot = if ($env:XDG_CONFIG_HOME) { $env:XDG_CONFIG_HOME } else { Join-Path $HOME '.config' }
+Start-Process (Join-Path $configRoot 'ponytail\band\board.html')
+```
+
+Rerun the Node command to refresh resumed sessions, then reload the browser page. The importer reads `sessions/` and `archived_sessions/` under `$CODEX_HOME` (default `~/.codex`), the [documented Codex history locations](https://learn.chatgpt.com/docs/reference/troubleshooting#feedback-and-logs). It writes `codex/sessions.csv` and `board.html` under `$XDG_CONFIG_HOME/ponytail/band` (default `~/.config/ponytail/band`), preserving existing Claude CSV ledgers. The Claude Board button also includes the Codex ledger. Import and refresh one process at a time.
+
+Projects use the repository name recorded in session metadata, so branch checkouts and worktrees appear together. A local Git root is used when no repository name was recorded; non-repository folders appear under **Other chats**. Branch and folder details remain visible and searchable beneath each session. Sidebar counts are all time; the header identifies the selected period's count separately.
+
+Session names come from Codex's local `session_index.jsonl`. A date and short identifier are used when no title exists. Titles are copied into your local ledger and Board; raw prompts, tool output and transcripts are never copied. Token totals use recorded cumulative counters once, including across repeated snapshots and compaction. Root sessions only are included; forks and subagents are omitted to avoid counting copied history twice. These token totals exclude subagent work.
+
+Agent time sums completed turn intervals, excludes gaps between turns, and can include approval or tool waits. Completed timing is retained when other turns are unfinished; a **+** marks partial session timing. Totals and charts include recorded values and show coverage, such as **recorded for 11 of 12 sessions**, when data is partial. Averages use only sessions with recorded values, and percentage comparisons require complete coverage in both periods. Activity counts session start dates independently of timing. Unsupported metrics and empty cost/test columns are hidden; individual missing values use a dash. Cost, code reuse and test results cannot be inferred for Codex, including a subscription bill. Ambiguous token counter resets remain missing.
+
+Existing Codex ledgers are upgraded automatically on refresh; the shared Claude ledger format is unchanged. Project grouping uses repository names, so separate repositories with the same name share a group.
+
+Hover over an Activity hexagon for the date, sessions started, recorded agent time, tokens, turns, projects and up to three session titles. Missing metrics are omitted; partial metrics include coverage notes. These are lifetime totals for sessions started on that date, including later turns, rather than work performed only within that day.
+
+This is a manual history importer for local source checkouts. It does not install a native Codex band or automatic refresh. Codex's JSONL event format is an internal compatibility boundary: unknown records are ignored, malformed lines (including unfinished tails) are counted and skipped, and unreadable files are reported. Previously imported sessions remain in the ledger if their source files disappear. The command uses Node's [native TypeScript support](https://nodejs.org/api/typescript.html) to reuse the existing Board renderer.
+
 ## How it works
 
 <p align="center">
